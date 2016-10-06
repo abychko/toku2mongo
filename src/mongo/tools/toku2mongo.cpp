@@ -54,7 +54,7 @@ class TokuOplogTool : public Tool {
             e = *it;
         }
         BSONObj o = BSON("_id" << e);
-        log() << "primaryKeyToIdKey: pk = " << pk << ", o = " << o << endl;
+        LOG(2) << "primaryKeyToIdKey: pk = " << pk << ", o = " << o << endl;
         return o;
     }
 
