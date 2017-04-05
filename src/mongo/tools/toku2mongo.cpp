@@ -40,6 +40,7 @@
 
 #include <boost/filesystem.hpp>
 #include <boost/program_options.hpp>
+#include <boost/algorithm/string.hpp>
 
 using namespace mongo;
 
@@ -71,29 +72,44 @@ class TokuOplogTool : public Tool {
                 error() << "invalid ns in op " << op << endl;
                 return false;
             }
-            const char *ns = op[OplogHelpers::KEY_STR_NS].valuestrsafe();
+            NamespaceString ns(op[OplogHelpers::KEY_STR_NS].valuestrsafe());
+            map<string, string>::const_iterator newDbIt = _renameDatabase.find(ns.db);
+            if (newDbIt != _renameDatabase.end()) {
+                ns.db = newDbIt->second;
+            }
+            if (_migrateEventsCollection && ns.coll == "events") {
+                const BSONObj obj = op[OplogHelpers::KEY_STR_ROW].Obj();
+                if (op["company_id"].type() != String) {
+                    error() << "invalid or missing company_id in events op" << endl;
+                    return false;
+                }
+                string company_id = obj["company_id"].valuestr();
+                std::replace(company_id.begin(), company_id.end(), '-', '_');
+                ns.coll = "events_" + company_id;
+            }
+            string ns_str = ns.ns();
             if (type == OplogHelpers::OP_STR_INSERT || type == OplogHelpers::OP_STR_CAPPED_INSERT) {
                 const BSONObj obj = op[OplogHelpers::KEY_STR_ROW].Obj();
-                _conn->insert(ns, obj);
+                _conn->insert(ns_str, obj);
             } else if (type == OplogHelpers::OP_STR_UPDATE) {
                 const BSONObj oldObj = op[OplogHelpers::KEY_STR_OLD_ROW].Obj();
                 const BSONObj newObj = op[OplogHelpers::KEY_STR_NEW_ROW].Obj();
-                _conn->remove(ns, oldObj, true);
-                _conn->insert(ns, newObj);
+                _conn->remove(ns_str, oldObj, true);
+                _conn->insert(ns_str, newObj);
             } else if (type == OplogHelpers::OP_STR_UPDATE_ROW_WITH_MOD) {
                 const BSONObj id = primaryKeyToIdKey(op[OplogHelpers::KEY_STR_PK].Obj());
                 const BSONObj mods = op[OplogHelpers::KEY_STR_MODS].Obj();
-                _conn->update(ns, id, mods);
+                _conn->update(ns_str, id, mods);
             } else if (type == OplogHelpers::OP_STR_DELETE || type == OplogHelpers::OP_STR_CAPPED_DELETE) {
                 const BSONObj obj = op[OplogHelpers::KEY_STR_ROW].Obj();
-                _conn->remove(ns, obj);
+                _conn->remove(ns_str, obj);
             } else if (type == OplogHelpers::OP_STR_COMMAND) {
                 const BSONObj cmd = op[OplogHelpers::KEY_STR_ROW].Obj();
-                if (nsToCollectionSubstring(ns) != "$cmd") {
+                if (!ns.isCommand()) {
                     error() << "invalid command op " << op << endl;
                     return false;
                 }
-                BSONObj info = _conn->findOne(ns, cmd);
+                BSONObj info = _conn->findOne(ns_str, cmd);
                 if (!info["ok"].trueValue()) {
                     error() << "error replaying command op " << op << ": " << info << endl;
                     return false;
@@ -103,7 +119,7 @@ class TokuOplogTool : public Tool {
                 return false;
             }
 
-            std::string lastErr = _conn->getLastError(nsToDatabase(ns), false, false, _w);
+            std::string lastErr = _conn->getLastError(ns.db, false, false, _w);
             if (!lastErr.empty()) {
                 error() << lastErr << endl;
                 return false;
@@ -113,6 +129,15 @@ class TokuOplogTool : public Tool {
     }
 
     int _run() {
+        if (hasParam("renameDatabase")) {
+            string param = getParam("renameDatabase");
+            vector<std::string> params;
+            boost::split(params, param, boost::is_any_of(":"));
+            for (size_t i = 0; i + 1 < params.size(); i += 2) {
+                _renameDatabase[params[i]] = params[i + 1];
+            }
+        }
+
         if ( ! hasParam( "from" ) ) {
             log() << "need to specify --from" << endl;
             return -1;
@@ -295,6 +320,8 @@ class TokuOplogTool : public Tool {
     string _rpass;
     string _rauthenticationDatabase;
     string _rauthenticationMechanism;
+    bool _migrateEventsCollection;
+    map<string, string> _renameDatabase;
     GTID _maxGTIDSynced;
     Date_t _maxTimestampSynced;
     int _w;
@@ -308,6 +335,8 @@ public:
         ("gtid" , po::value<string>() , "max applied GTID" )
         ("w", po::value(&_w)->default_value(1), "w parameter for getLastError calls")
         ("from", po::value<string>() , "host to pull from" )
+        ("renameDatabase", po::value<string>() , "rename database" )
+        ("migrateEventsCollection", po::value<bool>(&_migrateEventsCollection) , "migrate events" )
         ("ruser", po::value<string>(), "username on source host if auth required" )
         ("rpass", new PasswordValue( &_rpass ), "password on source host" )
         ("rauthenticationDatabase",
