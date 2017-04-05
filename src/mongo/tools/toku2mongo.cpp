@@ -133,6 +133,10 @@ class TokuOplogTool : public Tool {
             string param = getParam("renameDatabase");
             vector<std::string> params;
             boost::split(params, param, boost::is_any_of(":"));
+            if (params.size() % 2 != 0) {
+                log() << "--renameDatabase requires even number of parts"
+                return -1;
+            }
             for (size_t i = 0; i + 1 < params.size(); i += 2) {
                 _renameDatabase[params[i]] = params[i + 1];
             }
