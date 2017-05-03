@@ -89,18 +89,22 @@ class TokuOplogTool : public Tool {
             }
             string ns_str = ns.ns();
             if (type == OplogHelpers::OP_STR_INSERT || type == OplogHelpers::OP_STR_CAPPED_INSERT) {
+                LOG(2) << "insert: " << ns_str << endl;
                 const BSONObj obj = op[OplogHelpers::KEY_STR_ROW].Obj();
                 _conn->insert(ns_str, obj);
             } else if (type == OplogHelpers::OP_STR_UPDATE) {
+                LOG(2) << "remove/insert: " << ns_str << endl;
                 const BSONObj oldObj = op[OplogHelpers::KEY_STR_OLD_ROW].Obj();
                 const BSONObj newObj = op[OplogHelpers::KEY_STR_NEW_ROW].Obj();
                 _conn->remove(ns_str, oldObj, true);
                 _conn->insert(ns_str, newObj);
             } else if (type == OplogHelpers::OP_STR_UPDATE_ROW_WITH_MOD) {
+                LOG(2) << "update: " << ns_str << endl;
                 const BSONObj id = primaryKeyToIdKey(op[OplogHelpers::KEY_STR_PK].Obj());
                 const BSONObj mods = op[OplogHelpers::KEY_STR_MODS].Obj();
                 _conn->update(ns_str, id, mods);
             } else if (type == OplogHelpers::OP_STR_DELETE || type == OplogHelpers::OP_STR_CAPPED_DELETE) {
+                LOG(2) << "remove: " << ns_str << endl;
                 const BSONObj obj = op[OplogHelpers::KEY_STR_ROW].Obj();
                 _conn->remove(ns_str, obj);
             } else if (type == OplogHelpers::OP_STR_COMMAND) {
@@ -109,6 +113,7 @@ class TokuOplogTool : public Tool {
                     error() << "invalid command op " << op << endl;
                     return false;
                 }
+                LOG(2) << "cmd: " << ns_str << endl;
                 BSONObj info = _conn->findOne(ns_str, cmd);
                 if (!info["ok"].trueValue()) {
                     error() << "error replaying command op " << op << ": " << info << endl;
