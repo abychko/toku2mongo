@@ -79,7 +79,7 @@ class TokuOplogTool : public Tool {
             }
             if (_migrateEventsCollection && ns.coll == "events") {
                 const BSONObj obj = op[OplogHelpers::KEY_STR_ROW].Obj();
-                if (op["company_id"].type() != String) {
+                if (obj["company_id"].type() != String) {
                     error() << "invalid or missing company_id in events op" << endl;
                     return false;
                 }
@@ -229,7 +229,7 @@ class TokuOplogTool : public Tool {
 
                 while (running && r.more()) {
                     BSONObj o = r.nextSafe();
-                    LOG(2) << o << endl;
+                    LOG(3) << o << endl;
 
                     if (needsGTIDCheck) {
                         GTID gtid = getGTIDFromBSON("_id", o);
