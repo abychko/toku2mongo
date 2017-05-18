@@ -32,6 +32,7 @@
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
 #include "mongo/util/password.h"
+#include "mongo/db/ops/update_internal.h"
 
 #include <exception>
 #include <fstream>
@@ -91,22 +92,51 @@ class TokuOplogTool : public Tool {
             if (type == OplogHelpers::OP_STR_INSERT || type == OplogHelpers::OP_STR_CAPPED_INSERT) {
                 LOG(2) << "insert: " << ns_str << endl;
                 const BSONObj obj = op[OplogHelpers::KEY_STR_ROW].Obj();
-                _conn->insert(ns_str, obj);
+                const BSONElement idElem = obj["_id"];
+                if (!idElem.ok()) {
+                    error() << "document to insert is missing _id field: " << obj << endl;
+                    return false;
+                }
+                BSONObj id = BSON("_id" << idElem);
+                _conn->update(ns_str, id, obj, true, false);
             } else if (type == OplogHelpers::OP_STR_UPDATE) {
-                LOG(2) << "remove/insert: " << ns_str << endl;
-                const BSONObj oldObj = op[OplogHelpers::KEY_STR_OLD_ROW].Obj();
-                const BSONObj newObj = op[OplogHelpers::KEY_STR_NEW_ROW].Obj();
-                _conn->remove(ns_str, oldObj, true);
-                _conn->insert(ns_str, newObj);
-            } else if (type == OplogHelpers::OP_STR_UPDATE_ROW_WITH_MOD) {
                 LOG(2) << "update: " << ns_str << endl;
+                const BSONObj newObj = op[OplogHelpers::KEY_STR_NEW_ROW].Obj();
+                const BSONObj id = primaryKeyToIdKey(op[OplogHelpers::KEY_STR_PK].Obj());
+                _conn->update(ns_str, id, newObj, true, false);
+            } else if (type == OplogHelpers::OP_STR_UPDATE_ROW_WITH_MOD) {
+                LOG(2) << "update with mod: " << ns_str << endl;
                 const BSONObj id = primaryKeyToIdKey(op[OplogHelpers::KEY_STR_PK].Obj());
                 const BSONObj mods = op[OplogHelpers::KEY_STR_MODS].Obj();
-                _conn->update(ns_str, id, mods);
+                const BSONElement oldRow = op[OplogHelpers::KEY_STR_OLD_ROW];
+                if (oldRow.ok()) {
+                    // we have old document, compute the update from that
+                    if (mods.isEmpty()) {
+                        error() << "empty document modification" << op << endl;
+                        return false;
+                    }
+                    IndexPathSet emptyIndexPathSet;
+                    // Copied from OplogHelpers::runUpdateModsWithRowWithLock
+                    // mongo/db/oplog_helpers.cpp:569 in tokumx version from github.com/7segments/mongo
+                    // mongo/db/oplog_helpers.cpp:546 in tokumx version from this repo
+                    scoped_ptr<ModSet> modSet(new ModSet(mods, emptyIndexPathSet));
+                    auto_ptr<ModSetState> mss = modSet->prepare(oldRow.Obj());
+                    BSONObj newObj = mss->createNewFromMods();
+                    _conn->update(ns_str, id, newObj, true, false);
+                } else {
+                    // no old document, just replay as upsert
+                    _conn->update(ns_str, id, mods, true, false);
+                }
             } else if (type == OplogHelpers::OP_STR_DELETE || type == OplogHelpers::OP_STR_CAPPED_DELETE) {
                 LOG(2) << "remove: " << ns_str << endl;
                 const BSONObj obj = op[OplogHelpers::KEY_STR_ROW].Obj();
-                _conn->remove(ns_str, obj);
+                const BSONElement idElem = obj["_id"];
+                if (!idElem.ok()) {
+                    error() << "document to insert is missing _id field: " << obj << endl;
+                    return false;
+                }
+                BSONObj id = BSON("_id" << idElem);
+                _conn->remove(ns_str, id, true);
             } else if (type == OplogHelpers::OP_STR_COMMAND) {
                 const BSONObj cmd = op[OplogHelpers::KEY_STR_ROW].Obj();
                 if (!ns.isCommand()) {
