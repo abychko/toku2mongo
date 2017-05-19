@@ -119,8 +119,9 @@ class TokuOplogTool : public Tool {
                     // Copied from OplogHelpers::runUpdateModsWithRowWithLock
                     // mongo/db/oplog_helpers.cpp:569 in tokumx version from github.com/7segments/mongo
                     // mongo/db/oplog_helpers.cpp:546 in tokumx version from this repo
+                    BSONObj oldRowObj = oldRow.Obj(); // need to keep this in variable as it has to outlive modSet
                     scoped_ptr<ModSet> modSet(new ModSet(mods, emptyIndexPathSet));
-                    auto_ptr<ModSetState> mss = modSet->prepare(oldRow.Obj());
+                    auto_ptr<ModSetState> mss = modSet->prepare(oldRowObj);
                     BSONObj newObj = mss->createNewFromMods();
                     _conn->update(ns_str, id, newObj, true, false);
                 } else {
