@@ -151,6 +151,11 @@ class TokuOplogTool : public Tool {
                 LOG(2) << "cmd: " << ns_str << endl;
                 BSONObj info = _conn->findOne(ns_str, cmd);
                 if (!info["ok"].trueValue()) {
+                    if (!cmd["create"].eoo() && info["code"].numberInt() == 48) {
+                        // we are trying to create a collection, but the collection already exists
+                        // so ignore the error
+                        continue;
+                    }
                     error() << "error replaying command op " << op << ": " << info << endl;
                     return false;
                 }
