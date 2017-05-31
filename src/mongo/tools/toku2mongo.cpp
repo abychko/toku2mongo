@@ -92,13 +92,17 @@ class TokuOplogTool : public Tool {
             if (type == OplogHelpers::OP_STR_INSERT || type == OplogHelpers::OP_STR_CAPPED_INSERT) {
                 LOG(2) << "insert: " << ns_str << endl;
                 const BSONObj obj = op[OplogHelpers::KEY_STR_ROW].Obj();
-                const BSONElement idElem = obj["_id"];
-                if (!idElem.ok()) {
-                    error() << "document to insert is missing _id field: " << obj << endl;
-                    return false;
+                if (boost::starts_with(ns.coll, "system.")) {
+                    _conn->insert(ns_str, obj);
+                } else {
+                    const BSONElement idElem = obj["_id"];
+                    if (!idElem.ok()) {
+                        error() << "document to insert is missing _id field: " << obj << endl;
+                        return false;
+                    }
+                    BSONObj id = BSON("_id" << idElem);
+                    _conn->update(ns_str, id, obj, true, false);
                 }
-                BSONObj id = BSON("_id" << idElem);
-                _conn->update(ns_str, id, obj, true, false);
             } else if (type == OplogHelpers::OP_STR_UPDATE) {
                 LOG(2) << "update: " << ns_str << endl;
                 const BSONObj newObj = op[OplogHelpers::KEY_STR_NEW_ROW].Obj();
