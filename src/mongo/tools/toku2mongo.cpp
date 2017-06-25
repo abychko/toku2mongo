@@ -33,6 +33,7 @@
 #include "mongo/util/log.h"
 #include "mongo/util/password.h"
 #include "mongo/db/ops/update_internal.h"
+#include "mongo/platform/unordered_set.h"
 
 #include <exception>
 #include <fstream>
@@ -73,10 +74,24 @@ class TokuOplogTool : public Tool {
                 error() << "invalid ns in op " << op << endl;
                 return false;
             }
-            NamespaceString ns(op[OplogHelpers::KEY_STR_NS].valuestrsafe());
+            string ns_str = op[OplogHelpers::KEY_STR_NS].valuestrsafe();
+            if (!_only.empty()) {
+                unordered_set<string>::const_iterator it = _only.find(ns_str);
+                if (it == _only.end()) {
+                  continue;
+                }
+            }
+            if (!_ignore.empty()) {
+                unordered_set<string>::const_iterator it = _ignore.find(ns_str);
+                if (it != _ignore.end()) {
+                  continue;
+                }
+            }
+            NamespaceString ns(ns_str);
             map<string, string>::const_iterator newDbIt = _renameDatabase.find(ns.db);
             if (newDbIt != _renameDatabase.end()) {
                 ns.db = newDbIt->second;
+                ns_str = ns.ns();
             }
             if (_migrateEventsCollection && ns.coll == "events") {
                 const BSONObj obj = op[OplogHelpers::KEY_STR_ROW].Obj();
@@ -87,8 +102,8 @@ class TokuOplogTool : public Tool {
                 string company_id = obj["company_id"].valuestr();
                 std::replace(company_id.begin(), company_id.end(), '-', '_');
                 ns.coll = "events_" + company_id;
+                ns_str = ns.ns();
             }
-            string ns_str = ns.ns();
             if (type == OplogHelpers::OP_STR_INSERT || type == OplogHelpers::OP_STR_CAPPED_INSERT) {
                 LOG(2) << "insert: " << ns_str << endl;
                 const BSONObj obj = op[OplogHelpers::KEY_STR_ROW].Obj();
@@ -185,6 +200,16 @@ class TokuOplogTool : public Tool {
             for (size_t i = 0; i + 1 < params.size(); i += 2) {
                 _renameDatabase[params[i]] = params[i + 1];
             }
+        }
+
+        if (hasParam("ignore")) {
+            string param = getParam("ignore");
+            boost::split(_ignore, param, boost::is_any_of(","));
+        }
+
+        if (hasParam("only")) {
+            string param = getParam("only");
+            boost::split(_only, param, boost::is_any_of(","));
         }
 
         if ( ! hasParam( "from" ) ) {
@@ -371,6 +396,8 @@ class TokuOplogTool : public Tool {
     string _rauthenticationMechanism;
     bool _migrateEventsCollection;
     map<string, string> _renameDatabase;
+    unordered_set<string> _ignore;
+    unordered_set<string> _only;
     GTID _maxGTIDSynced;
     Date_t _maxTimestampSynced;
     int _w;
@@ -386,6 +413,8 @@ public:
         ("from", po::value<string>() , "host to pull from" )
         ("renameDatabase", po::value<string>() , "rename database" )
         ("migrateEventsCollection", po::value<bool>(&_migrateEventsCollection) , "migrate events" )
+        ("ignore", po::value<string>() , "comma separated list of ns to ignore" )
+        ("only", po::value<string>() , "comma separated list of ns to process, ignore the rest" )
         ("ruser", po::value<string>(), "username on source host if auth required" )
         ("rpass", new PasswordValue( &_rpass ), "password on source host" )
         ("rauthenticationDatabase",
