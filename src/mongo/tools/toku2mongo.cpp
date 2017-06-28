@@ -106,8 +106,18 @@ class TokuOplogTool : public Tool {
             }
             if (type == OplogHelpers::OP_STR_INSERT || type == OplogHelpers::OP_STR_CAPPED_INSERT) {
                 LOG(2) << "insert: " << ns_str << endl;
-                const BSONObj obj = op[OplogHelpers::KEY_STR_ROW].Obj();
+                BSONObj obj = op[OplogHelpers::KEY_STR_ROW].Obj();
                 if (boost::starts_with(ns.coll, "system.")) {
+                    string inner_ns_str = obj["ns"].valuestrsafe();
+                    if (!inner_ns_str.empty()) {
+                        NamespaceString inner_ns(inner_ns_str);
+                        map<string, string>::const_iterator newDbIt = _renameDatabase.find(inner_ns.db);
+                        if (newDbIt != _renameDatabase.end()) {
+                            inner_ns.db = newDbIt->second;
+                            BSONObj obj2 = obj.removeField("ns");
+                            obj = BSONObjBuilder().appendElements(obj2).append("ns", inner_ns.ns()).obj();
+                        }
+                    }
                     _conn->insert(ns_str, obj);
                 } else {
                     const BSONElement idElem = obj["_id"];
