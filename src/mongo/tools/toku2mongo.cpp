@@ -100,6 +100,9 @@ class TokuOplogTool : public Tool {
                     return false;
                 }
                 string company_id = obj["company_id"].valuestr();
+                if (_onlyProject.size() > 0 && _onlyProject != company_id) {
+                    continue;
+                }
                 std::replace(company_id.begin(), company_id.end(), '-', '_');
                 ns.coll = "events_" + company_id;
                 ns_str = ns.ns();
@@ -404,6 +407,7 @@ class TokuOplogTool : public Tool {
     string _rpass;
     string _rauthenticationDatabase;
     string _rauthenticationMechanism;
+    string _onlyProject;
     bool _migrateEventsCollection;
     map<string, string> _renameDatabase;
     unordered_set<string> _ignore;
@@ -423,6 +427,7 @@ public:
         ("from", po::value<string>() , "host to pull from" )
         ("renameDatabase", po::value<string>() , "rename database" )
         ("migrateEventsCollection", po::value<bool>(&_migrateEventsCollection) , "migrate events" )
+        ("onlyProject", po::value<string>(&onlyProject) , "only process events for a single project" )
         ("ignore", po::value<string>() , "comma separated list of ns to ignore" )
         ("only", po::value<string>() , "comma separated list of ns to process, ignore the rest" )
         ("ruser", po::value<string>(), "username on source host if auth required" )
