@@ -93,6 +93,15 @@ class TokuOplogTool : public Tool {
                 ns.db = newDbIt->second;
                 ns_str = ns.ns();
             }
+            if (_onlyProject.size() > 0) {
+                const BSONObj obj = op[OplogHelpers::KEY_STR_ROW].Obj();
+                if (obj["company_id"].type() == String) {
+                    string company_id = obj["company_id"].valuestr();
+                    if (_onlyProject != company_id) {
+                        continue;
+                    }
+                }
+            }
             if (_migrateEventsCollection && ns.coll == "events") {
                 const BSONObj obj = op[OplogHelpers::KEY_STR_ROW].Obj();
                 if (obj["company_id"].type() != String) {
@@ -100,9 +109,6 @@ class TokuOplogTool : public Tool {
                     return false;
                 }
                 string company_id = obj["company_id"].valuestr();
-                if (_onlyProject.size() > 0 && _onlyProject != company_id) {
-                    continue;
-                }
                 std::replace(company_id.begin(), company_id.end(), '-', '_');
                 ns.coll = "events_" + company_id;
                 ns_str = ns.ns();
@@ -427,7 +433,7 @@ public:
         ("from", po::value<string>() , "host to pull from" )
         ("renameDatabase", po::value<string>() , "rename database" )
         ("migrateEventsCollection", po::value<bool>(&_migrateEventsCollection) , "migrate events" )
-        ("onlyProject", po::value<string>(&onlyProject) , "only process events for a single project" )
+        ("onlyProject", po::value<string>(&_onlyProject) , "only process docs for a single project (be careful about using this, it only handles a few specific collections)" )
         ("ignore", po::value<string>() , "comma separated list of ns to ignore" )
         ("only", po::value<string>() , "comma separated list of ns to process, ignore the rest" )
         ("ruser", po::value<string>(), "username on source host if auth required" )
