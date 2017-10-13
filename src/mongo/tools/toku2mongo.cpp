@@ -32,6 +32,8 @@
 #include "mongo/util/assert_util.h"
 #include "mongo/util/log.h"
 #include "mongo/util/password.h"
+#include "mongo/db/ops/update_internal.h"
+#include "mongo/platform/unordered_set.h"
 
 #include <exception>
 #include <fstream>
@@ -40,6 +42,7 @@
 
 #include <boost/filesystem.hpp>
 #include <boost/program_options.hpp>
+#include <boost/algorithm/string.hpp>
 
 using namespace mongo;
 
@@ -54,7 +57,7 @@ class TokuOplogTool : public Tool {
             e = *it;
         }
         BSONObj o = BSON("_id" << e);
-        log() << "primaryKeyToIdKey: pk = " << pk << ", o = " << o << endl;
+        LOG(2) << "primaryKeyToIdKey: pk = " << pk << ", o = " << o << endl;
         return o;
     }
 
@@ -71,30 +74,125 @@ class TokuOplogTool : public Tool {
                 error() << "invalid ns in op " << op << endl;
                 return false;
             }
-            const char *ns = op[OplogHelpers::KEY_STR_NS].valuestrsafe();
-            if (type == OplogHelpers::OP_STR_INSERT || type == OplogHelpers::OP_STR_CAPPED_INSERT) {
+            string ns_str = op[OplogHelpers::KEY_STR_NS].valuestrsafe();
+            if (!_only.empty()) {
+                unordered_set<string>::const_iterator it = _only.find(ns_str);
+                if (it == _only.end()) {
+                  continue;
+                }
+            }
+            if (!_ignore.empty()) {
+                unordered_set<string>::const_iterator it = _ignore.find(ns_str);
+                if (it != _ignore.end()) {
+                  continue;
+                }
+            }
+            NamespaceString ns(ns_str);
+            map<string, string>::const_iterator newDbIt = _renameDatabase.find(ns.db);
+            if (newDbIt != _renameDatabase.end()) {
+                ns.db = newDbIt->second;
+                ns_str = ns.ns();
+            }
+            if (_onlyProject.size() > 0) {
+                const BSONElement elem = op[OplogHelpers::KEY_STR_ROW];
+                if (elem.isABSONObj()) {
+                    const BSONObj obj = elem.Obj();
+                    if (obj["company_id"].type() == String) {
+                        string company_id = obj["company_id"].valuestr();
+                        if (_onlyProject != company_id) {
+                            continue;
+                        }
+                    }
+                }
+            }
+            if (_migrateEventsCollection && ns.coll == "events") {
                 const BSONObj obj = op[OplogHelpers::KEY_STR_ROW].Obj();
-                _conn->insert(ns, obj);
+                if (obj["company_id"].type() != String) {
+                    error() << "invalid or missing company_id in events op" << endl;
+                    return false;
+                }
+                string company_id = obj["company_id"].valuestr();
+                std::replace(company_id.begin(), company_id.end(), '-', '_');
+                ns.coll = "events_" + company_id;
+                ns_str = ns.ns();
+            }
+            if (type == OplogHelpers::OP_STR_INSERT || type == OplogHelpers::OP_STR_CAPPED_INSERT) {
+                LOG(2) << "insert: " << ns_str << endl;
+                BSONObj obj = op[OplogHelpers::KEY_STR_ROW].Obj();
+                if (boost::starts_with(ns.coll, "system.")) {
+                    string inner_ns_str = obj["ns"].valuestrsafe();
+                    if (!inner_ns_str.empty()) {
+                        NamespaceString inner_ns(inner_ns_str);
+                        map<string, string>::const_iterator newDbIt = _renameDatabase.find(inner_ns.db);
+                        if (newDbIt != _renameDatabase.end()) {
+                            inner_ns.db = newDbIt->second;
+                            BSONObj obj2 = obj.removeField("ns");
+                            obj = BSONObjBuilder().appendElements(obj2).append("ns", inner_ns.ns()).obj();
+                        }
+                    }
+                    _conn->insert(ns_str, obj);
+                } else {
+                    const BSONElement idElem = obj["_id"];
+                    if (!idElem.ok()) {
+                        error() << "document to insert is missing _id field: " << obj << endl;
+                        return false;
+                    }
+                    BSONObj id = BSON("_id" << idElem);
+                    _conn->update(ns_str, id, obj, true, false);
+                }
             } else if (type == OplogHelpers::OP_STR_UPDATE) {
-                const BSONObj oldObj = op[OplogHelpers::KEY_STR_OLD_ROW].Obj();
+                LOG(2) << "update: " << ns_str << endl;
                 const BSONObj newObj = op[OplogHelpers::KEY_STR_NEW_ROW].Obj();
-                _conn->remove(ns, oldObj, true);
-                _conn->insert(ns, newObj);
+                const BSONObj id = primaryKeyToIdKey(op[OplogHelpers::KEY_STR_PK].Obj());
+                _conn->update(ns_str, id, newObj, true, false);
             } else if (type == OplogHelpers::OP_STR_UPDATE_ROW_WITH_MOD) {
+                LOG(2) << "update with mod: " << ns_str << endl;
                 const BSONObj id = primaryKeyToIdKey(op[OplogHelpers::KEY_STR_PK].Obj());
                 const BSONObj mods = op[OplogHelpers::KEY_STR_MODS].Obj();
-                _conn->update(ns, id, mods);
+                const BSONElement oldRow = op[OplogHelpers::KEY_STR_OLD_ROW];
+                if (oldRow.ok()) {
+                    // we have old document, compute the update from that
+                    if (mods.isEmpty()) {
+                        error() << "empty document modification" << op << endl;
+                        return false;
+                    }
+                    IndexPathSet emptyIndexPathSet;
+                    // Copied from OplogHelpers::runUpdateModsWithRowWithLock
+                    // mongo/db/oplog_helpers.cpp:569 in tokumx version from github.com/7segments/mongo
+                    // mongo/db/oplog_helpers.cpp:546 in tokumx version from this repo
+                    BSONObj oldRowObj = oldRow.Obj(); // need to keep this in variable as it has to outlive modSet
+                    scoped_ptr<ModSet> modSet(new ModSet(mods, emptyIndexPathSet));
+                    auto_ptr<ModSetState> mss = modSet->prepare(oldRowObj);
+                    BSONObj newObj = mss->createNewFromMods();
+                    _conn->update(ns_str, id, newObj, true, false);
+                } else {
+                    // no old document, just replay as upsert
+                    _conn->update(ns_str, id, mods, true, false);
+                }
             } else if (type == OplogHelpers::OP_STR_DELETE || type == OplogHelpers::OP_STR_CAPPED_DELETE) {
+                LOG(2) << "remove: " << ns_str << endl;
                 const BSONObj obj = op[OplogHelpers::KEY_STR_ROW].Obj();
-                _conn->remove(ns, obj);
+                const BSONElement idElem = obj["_id"];
+                if (!idElem.ok()) {
+                    error() << "document to insert is missing _id field: " << obj << endl;
+                    return false;
+                }
+                BSONObj id = BSON("_id" << idElem);
+                _conn->remove(ns_str, id, true);
             } else if (type == OplogHelpers::OP_STR_COMMAND) {
                 const BSONObj cmd = op[OplogHelpers::KEY_STR_ROW].Obj();
-                if (nsToCollectionSubstring(ns) != "$cmd") {
+                if (!ns.isCommand()) {
                     error() << "invalid command op " << op << endl;
                     return false;
                 }
-                BSONObj info = _conn->findOne(ns, cmd);
+                LOG(2) << "cmd: " << ns_str << endl;
+                BSONObj info = _conn->findOne(ns_str, cmd);
                 if (!info["ok"].trueValue()) {
+                    if (!cmd["create"].eoo() && info["code"].numberInt() == 48) {
+                        // we are trying to create a collection, but the collection already exists
+                        // so ignore the error
+                        continue;
+                    }
                     error() << "error replaying command op " << op << ": " << info << endl;
                     return false;
                 }
@@ -103,7 +201,7 @@ class TokuOplogTool : public Tool {
                 return false;
             }
 
-            std::string lastErr = _conn->getLastError(nsToDatabase(ns), false, false, _w);
+            std::string lastErr = _conn->getLastError(ns.db, false, false, _w);
             if (!lastErr.empty()) {
                 error() << lastErr << endl;
                 return false;
@@ -113,6 +211,29 @@ class TokuOplogTool : public Tool {
     }
 
     int _run() {
+        if (hasParam("renameDatabase")) {
+            string param = getParam("renameDatabase");
+            vector<std::string> params;
+            boost::split(params, param, boost::is_any_of(":"));
+            if (params.size() % 2 != 0) {
+                log() << "--renameDatabase requires even number of parts" << endl;
+                return -1;
+            }
+            for (size_t i = 0; i + 1 < params.size(); i += 2) {
+                _renameDatabase[params[i]] = params[i + 1];
+            }
+        }
+
+        if (hasParam("ignore")) {
+            string param = getParam("ignore");
+            boost::split(_ignore, param, boost::is_any_of(","));
+        }
+
+        if (hasParam("only")) {
+            string param = getParam("only");
+            boost::split(_only, param, boost::is_any_of(","));
+        }
+
         if ( ! hasParam( "from" ) ) {
             log() << "need to specify --from" << endl;
             return -1;
@@ -195,7 +316,7 @@ class TokuOplogTool : public Tool {
 
                 while (running && r.more()) {
                     BSONObj o = r.nextSafe();
-                    LOG(2) << o << endl;
+                    LOG(3) << o << endl;
 
                     if (needsGTIDCheck) {
                         GTID gtid = getGTIDFromBSON("_id", o);
@@ -295,6 +416,11 @@ class TokuOplogTool : public Tool {
     string _rpass;
     string _rauthenticationDatabase;
     string _rauthenticationMechanism;
+    string _onlyProject;
+    bool _migrateEventsCollection;
+    map<string, string> _renameDatabase;
+    unordered_set<string> _ignore;
+    unordered_set<string> _only;
     GTID _maxGTIDSynced;
     Date_t _maxTimestampSynced;
     int _w;
@@ -308,6 +434,11 @@ public:
         ("gtid" , po::value<string>() , "max applied GTID" )
         ("w", po::value(&_w)->default_value(1), "w parameter for getLastError calls")
         ("from", po::value<string>() , "host to pull from" )
+        ("renameDatabase", po::value<string>() , "rename database" )
+        ("migrateEventsCollection", po::value<bool>(&_migrateEventsCollection) , "migrate events" )
+        ("onlyProject", po::value<string>(&_onlyProject) , "only process docs for a single project (be careful about using this, it only handles a few specific collections)" )
+        ("ignore", po::value<string>() , "comma separated list of ns to ignore" )
+        ("only", po::value<string>() , "comma separated list of ns to process, ignore the rest" )
         ("ruser", po::value<string>(), "username on source host if auth required" )
         ("rpass", new PasswordValue( &_rpass ), "password on source host" )
         ("rauthenticationDatabase",
