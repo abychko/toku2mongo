@@ -94,11 +94,14 @@ class TokuOplogTool : public Tool {
                 ns_str = ns.ns();
             }
             if (_onlyProject.size() > 0) {
-                const BSONObj obj = op[OplogHelpers::KEY_STR_ROW].Obj();
-                if (obj["company_id"].type() == String) {
-                    string company_id = obj["company_id"].valuestr();
-                    if (_onlyProject != company_id) {
-                        continue;
+                const BSONElement elem = op[OplogHelpers::KEY_STR_ROW];
+                if (elem.isABSONObj()) {
+                    const BSONObj obj = elem.Obj();
+                    if (obj["company_id"].type() == String) {
+                        string company_id = obj["company_id"].valuestr();
+                        if (_onlyProject != company_id) {
+                            continue;
+                        }
                     }
                 }
             }
