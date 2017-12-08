@@ -76,10 +76,9 @@ class TokuOplogTool : public Tool {
                 const BSONObj obj = op[OplogHelpers::KEY_STR_ROW].Obj();
                 _conn->insert(ns, obj);
             } else if (type == OplogHelpers::OP_STR_UPDATE) {
-                const BSONObj oldObj = op[OplogHelpers::KEY_STR_OLD_ROW].Obj();
+                const BSONObj id = primaryKeyToIdKey(op[OplogHelpers::KEY_STR_PK].Obj());
                 const BSONObj newObj = op[OplogHelpers::KEY_STR_NEW_ROW].Obj();
-                _conn->remove(ns, oldObj, true);
-                _conn->insert(ns, newObj);
+                _conn->update(ns, id, newObj, true, false);
             } else if (type == OplogHelpers::OP_STR_UPDATE_ROW_WITH_MOD) {
                 const BSONObj id = primaryKeyToIdKey(op[OplogHelpers::KEY_STR_PK].Obj());
                 const BSONObj mods = op[OplogHelpers::KEY_STR_MODS].Obj();
